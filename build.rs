@@ -129,40 +129,7 @@ fn insert_scratch_transition(old_scratch: HWord, new_scratch: HWord, ops: &mut V
     ops.insert((scratchify_must_be_after + offset*2)/3, Op::CommitNewScratch);
 }
 
-fn main() {
-    let mut asm = Assembler::new();
-    
-    asm.global("foozle2");
-    let reg = [
-        [Ymm0, Ymm1, Ymm2, Ymm3],
-        [Ymm4, Ymm5, Ymm6, Ymm7],
-        [Ymm8, Ymm9, Ymm10, Ymm11],
-        [Ymm12, Ymm13, Ymm14, Ymm15],
-    ];
-    
-    for row in 0..4 {
-        for col in 0..4 {
-            asm.vbroadcastss(reg[row][col], Rcx.value_at_offset(4 * (row*4 + col) as i32));
-        }
-    }
-    
-    let mut ops = Vec::new();
-    
-    for col in 0..4 {
-        quarter_round(&mut ops, 
-            reg[0][col], 
-            reg[1][col], 
-            reg[2][col], 
-            reg[3][col]);
-    }
-    for diagonal in 0..4 {
-        quarter_round(&mut ops, 
-            reg[0][(diagonal+0)%4], 
-            reg[1][(diagonal+1)%4], 
-            reg[2][(diagonal+2)%4], 
-            reg[3][(diagonal+3)%4]);
-    }
-    
+fn analyze(ops: Vec<Op>) {
     print_ops(&ops[..]);
     
     let ymms = &[ Ymm0, Ymm1, Ymm2, Ymm3, Ymm4, Ymm5, Ymm6, Ymm7, Ymm8, Ymm9, Ymm10, Ymm11, Ymm12, Ymm13, Ymm14, Ymm15 ];
@@ -208,9 +175,47 @@ fn main() {
         }
         //{ let x = defer_usage_of(Ymm15, &ops, 59); println!("deferred {:?} until {}", reg, x.1); }
     }
+}
+
+fn main() {
+    let mut asm = Assembler::new();
     
-    let scratch0 = Ymm12;
-    let scratch1 = Ymm10;
+    asm.global("foozle2");
+    let reg = [
+        [Ymm0, Ymm1, Ymm2, Ymm3],
+        [Ymm4, Ymm5, Ymm6, Ymm7],
+        [Ymm8, Ymm9, Ymm10, Ymm11],
+        [Ymm12, Ymm13, Ymm14, Ymm15],
+    ];
+    let reg_byte_size = 32;
+    
+    for row in 0..4 {
+        for col in 0..4 {
+            asm.vbroadcastss(reg[row][col], Rcx.value_at_offset(4 * (row*4 + col) as i32));
+        }
+    }
+    
+    let mut ops = Vec::new();
+    
+    for col in 0..4 {
+        quarter_round(&mut ops, 
+            reg[0][col], 
+            reg[1][col], 
+            reg[2][col], 
+            reg[3][col]);
+    }
+    for diagonal in 0..4 {
+        quarter_round(&mut ops, 
+            reg[0][(diagonal+0)%4], 
+            reg[1][(diagonal+1)%4], 
+            reg[2][(diagonal+2)%4], 
+            reg[3][(diagonal+3)%4]);
+    }
+    
+    
+    
+    let scratch0 = reg[3][0];
+    let scratch1 = reg[2][2];
     
     let ops_and_offset = defer_usage_of(scratch0, &ops, 0);
     let mut ops = ops_and_offset.0;
@@ -227,7 +232,7 @@ fn main() {
     
     print_ops(&ops[..]);
     
-    let scratch_offsets = (128, 128+32);
+    let scratch_offsets = (128, 128+reg_byte_size);
     let mut scratch = scratch0;
     let mut scratch_offset = scratch_offsets.0;
     let mut pending_scratch: Option<(HWord, i32)> = None;
@@ -279,8 +284,10 @@ fn main() {
     // Restore the scratch into a register
     asm.vmovupd(scratch, Rsp.value_at_offset(scratch_offset));
     
-    for (idx, reg) in ymms.iter().enumerate() {
-        asm.vmovupd(Rdx.value_at_offset((idx as i32)*32), *reg);
+    for (row_idx, row) in reg.iter().enumerate() {
+        for (col_idx, r) in row.iter().enumerate() {
+            asm.vmovupd(Rdx.value_at_offset(((row_idx*4+col_idx) as i32)*reg_byte_size), *r);
+        }
     }
     
     asm.ret(no_arg());
