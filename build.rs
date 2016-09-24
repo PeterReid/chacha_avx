@@ -68,13 +68,14 @@ trait InstrGen where Self: std::marker::Sized {
 fn opset<R: Copy+Eq+PartialEq>(ops: &mut Vec<Op<R>>, x: R, y: R, z: R, roll_amount: u8) {
     ops.push(Op::Add{dest: x, source: y});
     ops.push(Op::Xor{dest: z, source: x});
-    if roll_amount == 16 {
-        ops.push(Op::Roll16{dest: z});
-    } else {
+    //TODO: We need a register to hold the bit pattern that specifies that roll. Or we could put it in RAM
+    //if roll_amount == 16 {
+    //    ops.push(Op::Roll16{dest: z});
+    //} else {
         ops.push(Op::ShiftLeftIntoScratch{source: z, amount: roll_amount});
         ops.push(Op::ShiftSelfRight{dest: z, amount: 32 - roll_amount});
         ops.push(Op::CombineWithScratch{dest: z});
-    }
+    //}
 }
 
 fn quarter_round<R: Copy+PartialEq+Eq>(ops: &mut Vec<Op<R>>, a: R, b: R, c: R, d: R) {
@@ -206,13 +207,15 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &In
     
     print_ops(&ops[..]);
     
-    let scratch_offsets = (128, 128+reg_byte_size);
+    let scratch_offsets = (-reg_byte_size, -2*reg_byte_size);
     let mut scratch = scratch0;
     let mut scratch_offset = scratch_offsets.0;
     let mut pending_scratch: Option<(R, i32)> = None;
     
     // Set up our initial scratch register.
     asm.vmovupd(Rsp.value_at_offset(scratch_offset), scratch);
+    
+    asm.mov(Rax, 1);
     
     asm.local("chacha_avx_top");
     
@@ -274,7 +277,7 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &In
     
     asm.align(16);
     asm.local("chacha_avx_constant");
-    asm.constant(&[1,0,0,0, 2,0,0,0, 3,0,0,0, 4,0,0,0][..]);
+    asm.constant(&[0,0,0,0, 1,0,0,0, 2,0,0,0, 3,0,0,0][..]);
     
 }
 
