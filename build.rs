@@ -215,7 +215,7 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &In
     // Set up our initial scratch register.
     asm.vmovupd(Rsp.value_at_offset(scratch_offset), scratch);
     
-    asm.mov(Rax, 1);
+    asm.mov(Rax, 10);
     
     asm.local("chacha_avx_top");
     
@@ -263,13 +263,48 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &In
     asm.sub(Rax, 1);
     asm.ja(rip_nonrelative("chacha_avx_top"));
     
+    // Rearrange. Right now each register holds four the values for one cell in four consecutive blocks.
+    // Each individual block needs to be placed contiguously in memory.
     
-    // Restore the scratch into a register
-    asm.vmovupd(scratch, Rsp.value_at_offset(scratch_offset));
-    
-    for (row_idx, row) in reg.iter().enumerate() {
-        for (col_idx, r) in row.iter().enumerate() {
-            asm.vmovupd(Rdx.value_at_offset(((row_idx*4+col_idx) as i32)*reg_byte_size), *r);
+    for row in 0..4i32 {
+        let a = reg[row as usize][0];
+        let b = reg[row as usize][1];
+        let c = reg[row as usize][2];
+        let d = reg[row as usize][3];
+        
+        assert!(scratch != a && scratch != b && scratch != c && scratch != d);
+        
+        let row_offset = row*4*4;
+        let block_1 = 64*0;
+        let block_2 = 64*1;
+        let block_3 = 64*2;
+        let block_4 = 64*3;
+        
+        let half_row_offset = 4 * 2;
+        
+        asm.vpunpckldq(scratch, a, b); // scratch = A1 B1 A2 B2
+        asm.movlps(Rdx.value_at_offset(row_offset + block_1), scratch);
+        asm.movhps(Rdx.value_at_offset(row_offset + block_2), scratch);
+        
+        asm.vpunpckldq(scratch, c, d); // scratch = C1 D1 C2 D2
+        asm.movlps(Rdx.value_at_offset(row_offset + block_1 + half_row_offset), scratch);
+        asm.movhps(Rdx.value_at_offset(row_offset + block_2 + half_row_offset), scratch);
+        
+        asm.vpunpckhdq(scratch, a, b); // scratch = A3 B3 A4 B4
+        asm.movlps(Rdx.value_at_offset(row_offset + block_3), scratch);
+        asm.movhps(Rdx.value_at_offset(row_offset + block_4), scratch);
+        
+        asm.vpunpckhdq(scratch, c, d); // scratch = C3 D3 C4 D4
+        asm.movlps(Rdx.value_at_offset(row_offset + block_3 + half_row_offset), scratch);
+        asm.movhps(Rdx.value_at_offset(row_offset + block_4 + half_row_offset), scratch);
+        
+        if scratch != reg[0][0] {
+            // Keep scratch from overlapping with what we're saving
+            
+            asm.vmovupd(scratch, Rsp.value_at_offset(scratch_offset));
+            asm.vmovupd(Rsp.value_at_offset(scratch_offset), reg[0][0]);
+            
+            scratch = reg[0][0];
         }
     }
     
@@ -277,7 +312,7 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &In
     
     asm.align(16);
     asm.local("chacha_avx_constant");
-    asm.constant(&[0,0,0,0, 1,0,0,0, 2,0,0,0, 3,0,0,0][..]);
+    asm.constant(&[0,0,0,0, 1,0,0,0, 2,0,0,0, 3,0,0,0][..]); // TODO: Needs to come from the InstrGen
     
 }
 
@@ -361,9 +396,13 @@ impl InstrGen for OWord {
 }
 
 fn main() {
+    assert!(cfg!(target_arch = "x86_64")); // TODO: Make Assember::new() return an enum with one of the various supported architectures
+    assert!(cfg!(target_env = "gnu")); // TODO: Take calling convention into account
+    assert!(cfg!(target_family = "windows")); // TODO: Take calling convention into account
+
     let mut asm = Assembler::new();
     
-    //asm.global("chacha_avx2");
+    //asm.global("chacha_avx2"); // TODO: Use variables instead of strings for non-global labels?
     //generate::<HWord>(&mut asm);
     
     asm.global("chacha_avx");
