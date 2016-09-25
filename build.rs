@@ -7,6 +7,7 @@ use rassembler::x64::HWord::*;
 use rassembler::x64::OWord::*;
 use rassembler::x64::QWord::*;
 use rassembler::x64::{rip_relative, rip_nonrelative};
+use rassembler::Arch;
 
 use std::collections::HashSet;
 use std::hash::Hash;
@@ -142,6 +143,9 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &In
     println!("{:?}", reg);
     
     let reg_byte_size = R::reg_byte_size();
+    let stack_space = reg_byte_size*2;
+    
+    asm.sub(Rsp, stack_space);
     
     let incrementing_constants = reg[0][0];
     let low_counters_unincreased = reg[0][1];
@@ -207,15 +211,14 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &In
     
     print_ops(&ops[..]);
     
-    let scratch_offsets = (-reg_byte_size, -2*reg_byte_size);
+    
+    let scratch_offsets = (0, reg_byte_size);
     let mut scratch = scratch0;
     let mut scratch_offset = scratch_offsets.0;
     let mut pending_scratch: Option<(R, i32)> = None;
     
     // Set up our initial scratch register.
     asm.vmovupd(Rsp.value_at_offset(scratch_offset), scratch);
-    
-    asm.mov(Rax, 10);
     
     asm.local("chacha_avx_top");
     
@@ -260,7 +263,7 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &In
         }
     }
     
-    asm.sub(Rax, 1);
+    asm.sub(R8, 1);
     asm.ja(rip_nonrelative("chacha_avx_top"));
     
     // Rearrange. Right now each register holds four the values for one cell in four consecutive blocks.
@@ -307,6 +310,8 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &In
             scratch = reg[0][0];
         }
     }
+    
+    asm.add(Rsp, stack_space);
     
     asm.ret(no_arg());
     
@@ -400,15 +405,18 @@ fn main() {
     assert!(cfg!(target_env = "gnu")); // TODO: Take calling convention into account
     assert!(cfg!(target_family = "windows")); // TODO: Take calling convention into account
 
-    let mut asm = Assembler::new();
+    match rassembler::new("foozle") {
+        Arch::X64(mut asm) => {
+            //asm.global("chacha_avx2"); // TODO: Use variables instead of strings for non-global labels?
+            //generate::<HWord>(&mut asm);
     
-    //asm.global("chacha_avx2"); // TODO: Use variables instead of strings for non-global labels?
-    //generate::<HWord>(&mut asm);
-    
-    asm.global("chacha_avx");
-    generate::<OWord>(&mut asm);
-    
-    asm.output();
-    
-    
+            asm.global("chacha_avx");
+            generate::<OWord>(&mut asm);
+            
+            asm.output();
+        }
+        //_ => {
+        //    panic!("Unsupported architecture");
+        //}
+    }
 }
