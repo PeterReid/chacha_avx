@@ -1,12 +1,12 @@
 extern crate rassembler;
 
-use rassembler::parser::Arg;
-use rassembler::Assembler;
-use rassembler::{HWord, OWord};
-use rassembler::HWord::*;
-use rassembler::OWord::*;
-use rassembler::QWord::*;
-use rassembler::{rip_relative, rip_nonrelative};
+use rassembler::x64::parser::Arg;
+use rassembler::x64::Assembler;
+use rassembler::x64::{HWord, OWord};
+use rassembler::x64::HWord::*;
+use rassembler::x64::OWord::*;
+use rassembler::x64::QWord::*;
+use rassembler::x64::{rip_relative, rip_nonrelative};
 
 use std::collections::HashSet;
 use std::hash::Hash;
