@@ -143,9 +143,15 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &In
     println!("{:?}", reg);
     
     let reg_byte_size = R::reg_byte_size();
-    let stack_space = reg_byte_size*2;
+    let saved_registers: Vec<OWord> = (6..16).map(OWord::from_index).collect();
+    let stack_space = reg_byte_size*2 + 16*(saved_registers.len() as i32);
     
     asm.sub(Rsp, stack_space);
+    
+    // Xmm6-15 are nonvolatile, so we must save them. https://msdn.microsoft.com/en-us/library/9z1stfyw.aspx
+    for (idx, saved_register) in saved_registers.iter().enumerate() {
+        asm.vmovupd(Rsp.value_at_offset(reg_byte_size*2 + (idx as i32)*16), *saved_register);
+    }
     
     let incrementing_constants = reg[0][0];
     let low_counters_unincreased = reg[0][1];
@@ -312,6 +318,12 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &In
     }
     
     asm.add(Rsp, stack_space);
+    
+    
+    // Restore Xmm6-15
+    for (idx, saved_register) in saved_registers.iter().enumerate() {
+        asm.vmovupd(*saved_register, Rsp.value_at_offset(reg_byte_size*2 + (idx as i32)*16));
+    }
     
     asm.ret(no_arg());
     
