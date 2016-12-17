@@ -138,13 +138,16 @@ fn insert_scratch_transition<R: Copy+PartialEq+Eq>(_old_scratch: R, new_scratch:
     ops.insert((scratchify_must_be_after + offset*2)/3, Op::CommitNewScratch);
 }
 
-fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &InstrGen<R>*/ asm: &mut Assembler) {
+fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(asm: &mut Assembler, add_to_input: bool, xor_with_output: bool) {
     let reg: [[R; 4]; 4] = R::regs();
     println!("{:?}", reg);
     
     let reg_byte_size = R::reg_byte_size();
     let saved_registers: Vec<OWord> = (6..16).map(OWord::from_index).collect();
-    let stack_space = reg_byte_size*2 + 16*(saved_registers.len() as i32);
+    let need_extra_scratch = add_to_input || xor_with_output;
+    let stack_space = reg_byte_size*2 + 16*(saved_registers.len() as i32)
+        + (if need_extra_scratch { 2 * reg_byte_size } else { 0 }) // space to store counter words
+        ;
     
     asm.sub(Rsp, stack_space);
     
@@ -156,11 +159,11 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &In
     let incrementing_constants = reg[0][0];
     let low_counters_unincreased = reg[0][1];
     //let zero_holder = reg[0][2];
-    let low_counters = reg[3][3];
-    let high_counters = reg[3][2];
+    let low_counters = reg[3][0];
+    let high_counters = reg[3][1];
     asm.movdqa(incrementing_constants, rip_relative("chacha_avx_constant"));
-    asm.vbroadcastss(low_counters_unincreased, Rcx.value_at_offset(4 * (4*3 + 3) as i32));
-    asm.vbroadcastss(high_counters, Rcx.value_at_offset(4 * (4*3 + 2) as i32));
+    asm.vbroadcastss(low_counters_unincreased, Rcx.value_at_offset(4 * (4*3 + 0) as i32));
+    asm.vbroadcastss(high_counters, Rcx.value_at_offset(4 * (4*3 + 1) as i32));
     
     asm.vpaddd(low_counters, low_counters_unincreased, incrementing_constants);
     // TODO: Handle overflow in the counters
@@ -169,6 +172,21 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &In
     // asm.pcmpeqd(low_counters, zero_holder);
     // asm.vpaddd(high_counters, zero_holder, high_counters);
     // TODO: Handle overflow in the counters ##################
+    
+    // Where we store the counter words before they are shuffled around
+    let low_counter_offset = reg_byte_size*2 + (saved_registers.len() as i32)*16;
+    let high_counter_offset = reg_byte_size*3 + (saved_registers.len() as i32)*16;
+    let low_counter_storage = Rsp.value_at_offset(low_counter_offset);
+    let high_counter_storage = Rsp.value_at_offset(high_counter_offset);
+    let low_counter_storage_plus_half = Rsp.value_at_offset(low_counter_offset + reg_byte_size/2);
+    let high_counter_storage_plus_half = Rsp.value_at_offset(high_counter_offset + reg_byte_size/2);
+    
+    if add_to_input {
+        // Store the counter words so we can add them later
+        asm.vmovupd(low_counter_storage.clone(), low_counters);
+        asm.vmovupd(high_counter_storage.clone(), high_counters);
+    }
+    
     
     for row in 0..4 {
         for col in 0..4 {
@@ -272,6 +290,29 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &In
     asm.sub(R8, 1);
     asm.ja(rip_nonrelative("chacha_avx_top"));
     
+    if add_to_input {
+        for row in 0..4 {
+            for col in 0..4 {
+                if reg[row][col] == low_counters {
+                    asm.vpaddd(reg[row][col], reg[row][col], low_counter_storage.clone());
+                } else if reg[row][col] == high_counters {
+                    asm.vpaddd(reg[row][col], reg[row][col], high_counter_storage.clone());
+                } else {
+                    assert!(scratch != reg[row][col]);
+                    asm.vbroadcastss(scratch, Rcx.value_at_offset(4 * (row*4 + col) as i32));
+                    asm.vpaddd(reg[row][col], reg[row][col], scratch);
+                }
+                    
+                if row==2 && col==2 {
+                    assert!(scratch != reg[row][col]);
+                    asm.vmovupd(scratch, Rsp.value_at_offset(scratch_offset));
+                    scratch = reg[row][col];
+                    asm.vmovupd(Rsp.value_at_offset(scratch_offset), scratch);
+                }
+            }
+        }
+    }
+    
     // Rearrange. Right now each register holds four the values for one cell in four consecutive blocks.
     // Each individual block needs to be placed contiguously in memory.
     
@@ -291,28 +332,61 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(/*instr_gen: &In
         
         let half_row_offset = 4 * 2;
         
-        asm.vpunpckldq(scratch, a, b); // scratch = A1 B1 A2 B2
-        asm.movlps(Rdx.value_at_offset(row_offset + block_1), scratch);
-        asm.movhps(Rdx.value_at_offset(row_offset + block_2), scratch);
-        
-        asm.vpunpckldq(scratch, c, d); // scratch = C1 D1 C2 D2
-        asm.movlps(Rdx.value_at_offset(row_offset + block_1 + half_row_offset), scratch);
-        asm.movhps(Rdx.value_at_offset(row_offset + block_2 + half_row_offset), scratch);
-        
-        asm.vpunpckhdq(scratch, a, b); // scratch = A3 B3 A4 B4
-        asm.movlps(Rdx.value_at_offset(row_offset + block_3), scratch);
-        asm.movhps(Rdx.value_at_offset(row_offset + block_4), scratch);
-        
-        asm.vpunpckhdq(scratch, c, d); // scratch = C3 D3 C4 D4
-        asm.movlps(Rdx.value_at_offset(row_offset + block_3 + half_row_offset), scratch);
-        asm.movhps(Rdx.value_at_offset(row_offset + block_4 + half_row_offset), scratch);
+        if xor_with_output {
+            asm.vpunpckldq(scratch, a, b); // scratch = A1 B1 A2 B2
+            asm.movlps(low_counter_storage.clone(), scratch);
+            asm.movhps(high_counter_storage.clone(), scratch);
+            
+            asm.vpunpckldq(scratch, c, d); // scratch = C1 D1 C2 D2
+            asm.movlps(low_counter_storage_plus_half.clone(), scratch);
+            asm.movhps(high_counter_storage_plus_half.clone(), scratch);
+            
+            asm.vmovupd(scratch, low_counter_storage.clone());
+            asm.vxorpd(scratch, scratch, Rdx.value_at_offset(row_offset + block_1));
+            asm.vmovupd(Rdx.value_at_offset(row_offset + block_1), scratch);
+            
+            asm.vmovupd(scratch, high_counter_storage.clone());
+            asm.vxorpd(scratch, scratch, Rdx.value_at_offset(row_offset + block_2));
+            asm.vmovupd(Rdx.value_at_offset(row_offset + block_2), scratch);
+            
+            asm.vpunpckhdq(scratch, a, b); // scratch = A3 B3 A4 B4
+            asm.movlps(low_counter_storage.clone(), scratch); // low_counter_storage = A3 B3 ?? ??
+            asm.movhps(high_counter_storage.clone(), scratch); // high_counter_storage = A4 B4 ?? ??
+            
+            asm.vpunpckhdq(scratch, c, d); // scratch = C3 D3 C4 D4
+            asm.movlps(low_counter_storage_plus_half.clone(), scratch); // low_counter_storage = A3 B3 C3 D4
+            asm.movhps(high_counter_storage_plus_half.clone(), scratch); // high_counter_storage = A4 B4 C4 D4
+            
+            asm.vmovupd(scratch, low_counter_storage.clone());
+            asm.vxorpd(scratch, scratch, Rdx.value_at_offset(row_offset + block_3));
+            asm.vmovupd(Rdx.value_at_offset(row_offset + block_3), scratch);
+            
+            asm.vmovupd(scratch, high_counter_storage.clone());
+            asm.vxorpd(scratch, scratch, Rdx.value_at_offset(row_offset + block_4));
+            asm.vmovupd(Rdx.value_at_offset(row_offset + block_4), scratch);
+        } else {
+            asm.vpunpckldq(scratch, a, b); // scratch = A1 B1 A2 B2
+            asm.movlps(Rdx.value_at_offset(row_offset + block_1), scratch); // block1 = A1 B1 ?? ?? 
+            asm.movhps(Rdx.value_at_offset(row_offset + block_2), scratch); // block2 = A2 B2 ?? ?? 
+            
+            asm.vpunpckldq(scratch, c, d); // scratch = C1 D1 C2 D2
+            asm.movlps(Rdx.value_at_offset(row_offset + block_1 + half_row_offset), scratch);
+            asm.movhps(Rdx.value_at_offset(row_offset + block_2 + half_row_offset), scratch);
+            
+            asm.vpunpckhdq(scratch, a, b); // scratch = A3 B3 A4 B4
+            asm.movlps(Rdx.value_at_offset(row_offset + block_3), scratch);
+            asm.movhps(Rdx.value_at_offset(row_offset + block_4), scratch);
+            
+            asm.vpunpckhdq(scratch, c, d); // scratch = C3 D3 C4 D4
+            asm.movlps(Rdx.value_at_offset(row_offset + block_3 + half_row_offset), scratch);
+            asm.movhps(Rdx.value_at_offset(row_offset + block_4 + half_row_offset), scratch);
+            
+        }
         
         if scratch != reg[0][0] {
             // Keep scratch from overlapping with what we're saving
-            
+            // We won't bother saving the regs that we're now using as scratch, since we've just written them to memory.
             asm.vmovupd(scratch, Rsp.value_at_offset(scratch_offset));
-            asm.vmovupd(Rsp.value_at_offset(scratch_offset), reg[0][0]);
-            
             scratch = reg[0][0];
         }
     }
@@ -423,7 +497,7 @@ fn main() {
             //generate::<HWord>(&mut asm);
     
             asm.global("chacha_avx");
-            generate::<OWord>(&mut asm);
+            generate::<OWord>(&mut asm, false, false);
             
             asm.output();
         }
