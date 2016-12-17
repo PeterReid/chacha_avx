@@ -156,12 +156,14 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(asm: &mut Assemb
         asm.vmovupd(Rsp.value_at_offset(reg_byte_size*2 + (idx as i32)*16), *saved_register);
     }
     
+    let round_incrementer_constant = asm.allocate_local();
+    
     let incrementing_constants = reg[0][0];
     let low_counters_unincreased = reg[0][1];
     //let zero_holder = reg[0][2];
     let low_counters = reg[3][0];
     let high_counters = reg[3][1];
-    asm.movdqa(incrementing_constants, rip_relative("chacha_avx_constant"));
+    asm.movdqa(incrementing_constants, rip_relative(round_incrementer_constant));
     asm.vbroadcastss(low_counters_unincreased, Rcx.value_at_offset(4 * (4*3 + 0) as i32));
     asm.vbroadcastss(high_counters, Rcx.value_at_offset(4 * (4*3 + 1) as i32));
     
@@ -244,7 +246,7 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(asm: &mut Assemb
     // Set up our initial scratch register.
     asm.vmovupd(Rsp.value_at_offset(scratch_offset), scratch);
     
-    asm.local("chacha_avx_top");
+    let top = asm.local();//"chacha_avx_top");
     
     for (idx, op) in ops.into_iter().enumerate() {
         println!("Coding op {}: {:?} with scratch = {:?}", idx, op, scratch);
@@ -288,7 +290,7 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(asm: &mut Assemb
     }
     
     asm.sub(R8, 1);
-    asm.ja(rip_nonrelative("chacha_avx_top"));
+    asm.ja(rip_nonrelative(top));
     
     if add_to_input {
         for row in 0..4 {
@@ -402,7 +404,9 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(asm: &mut Assemb
     asm.ret(no_arg());
     
     asm.align(16);
-    asm.local("chacha_avx_constant");
+    
+    asm.place_local(round_incrementer_constant);
+    //asm.local("chacha_avx_constant");
     asm.constant(&[0,0,0,0, 1,0,0,0, 2,0,0,0, 3,0,0,0][..]); // TODO: Needs to come from the InstrGen
     
 }
