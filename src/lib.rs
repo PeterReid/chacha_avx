@@ -1,16 +1,30 @@
 extern "C" {
-    fn chacha_avx(input_block: *const u32, output_blocks: *mut u8, doublerounds: u8) -> u32;
+    fn chacha_avx_permute(input_block: *const u32, output_blocks: *mut u8, doublerounds: u8) -> u32;
+    fn chacha_avx_permute_add(input_block: *const u32, output_blocks: *mut u8, doublerounds: u8) -> u32;
+    fn chacha_avx_permute_add_xor(input_block: *const u32, output_blocks: *mut u8, doublerounds: u8) -> u32;
 }
 
 pub fn chacha20_permute_words(input_block: &[u32; 16], output_blocks: &mut [u32; 64]) {
     unsafe {
-        chacha_avx(input_block.as_ptr(), output_blocks.as_mut_ptr() as *mut u8, 10);
+        chacha_avx_permute(input_block.as_ptr(), output_blocks.as_mut_ptr() as *mut u8, 10);
+    }
+}
+
+pub fn chacha20_permute_add_words(input_block: &[u32; 16], output_blocks: &mut [u32; 64]) {
+    unsafe {
+        chacha_avx_permute_add(input_block.as_ptr(), output_blocks.as_mut_ptr() as *mut u8, 10);
+    }
+}
+
+pub fn chacha20_permute_add_xor_words(input_block: &[u32; 16], output_blocks: &mut [u32; 64]) {
+    unsafe {
+        chacha_avx_permute_add_xor(input_block.as_ptr(), output_blocks.as_mut_ptr() as *mut u8, 10);
     }
 }
 
 pub fn encrypt(input_block: &[u32; 16], output_blocks: &mut [u8; 256], doublerounds: u8) {
     unsafe {
-        chacha_avx(input_block.as_ptr(), output_blocks.as_mut_ptr(), doublerounds);
+        chacha_avx_permute(input_block.as_ptr(), output_blocks.as_mut_ptr(), doublerounds);
     }
 }
 
@@ -20,10 +34,22 @@ fn twentyround() {
         11001100, 22002200, 33003300, 44004400, 55005500, 66006600, 77007700, 88008800,
         10101010, 20202020, 30303030, 40404040, 50505050, 60606060, 70707070, 80808080,
     ];
-    let mut result = [0u32; 16*4];
-    result[0] = 1363452;
-    let initial_result = result.to_vec();
-    chacha20_permute_words(&xs, &mut result);
+    let mut initial_result = [0u32; 16*4];
+    for (idx, word) in initial_result.iter_mut().enumerate() {
+        *word = (1 + idx as u32).wrapping_mul(3578555796);
+    }
+    let mut result_permute = [0u32; 16*4];
+    result_permute.copy_from_slice(&mut initial_result[..]);
+    chacha20_permute_words(&xs, &mut result_permute);
+    
+    let mut result_permute_add = [7u32; 16*4];
+    result_permute_add.copy_from_slice(&mut initial_result[..]);
+    chacha20_permute_add_words(&xs, &mut result_permute_add);
+    
+    let mut result_permute_add_xor = [9u32; 16*4];
+    result_permute_add_xor.copy_from_slice(&initial_result[..]);
+    chacha20_permute_add_xor_words(&xs, &mut result_permute_add_xor);
+    
     
     let permuted: Vec<u32> = [
         101210900,
@@ -95,21 +121,19 @@ fn twentyround() {
     let mut initial_with_counters = Vec::new();
     initial_with_counters.extend(&xs[..]);
     initial_with_counters.extend(&xs[..]);
-    initial_with_counters[32-1] += 1;
+    initial_with_counters[32-4] += 1;
     initial_with_counters.extend(&xs[..]);
-    initial_with_counters[48-1] += 2;
+    initial_with_counters[48-4] += 2;
     initial_with_counters.extend(&xs[..]);
-    initial_with_counters[64-1] += 3;
+    initial_with_counters[64-4] += 3;
     
     let added: Vec<u32> = permuted.iter().zip(initial_with_counters.iter()).map(|(x, y)| (*x).wrapping_add(*y)).collect();
     
     let _permuted_and_xored: Vec<u32> = permuted.iter().zip(initial_result.iter()).map(|(x, y)| *x ^ *y).collect();
     let encrypted: Vec<u32> = added.iter().zip(initial_result.iter()).map(|(x, y)| *x ^ *y).collect();
     
-    for (p, a) in permuted.iter().zip(result.iter()) {
-        println!("{} {}", *p, *a);
-    }
-    
-    assert_eq!(result.to_vec(), permuted);
+    assert_eq!(result_permute.to_vec(), permuted);
+    assert_eq!(result_permute_add.to_vec(), added);
+    assert_eq!(result_permute_add_xor.to_vec(), encrypted);
     
 }

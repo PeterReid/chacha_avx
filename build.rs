@@ -382,7 +382,6 @@ fn generate<R: Copy+PartialEq+Eq+Hash+Into<Arg>+Debug+InstrGen>(asm: &mut Assemb
             asm.vpunpckhdq(scratch, c, d); // scratch = C3 D3 C4 D4
             asm.movlps(Rdx.value_at_offset(row_offset + block_3 + half_row_offset), scratch);
             asm.movhps(Rdx.value_at_offset(row_offset + block_4 + half_row_offset), scratch);
-            
         }
         
         if scratch != reg[0][0] {
@@ -500,8 +499,14 @@ fn main() {
             //asm.global("chacha_avx2"); // TODO: Use variables instead of strings for non-global labels?
             //generate::<HWord>(&mut asm);
     
-            asm.global("chacha_avx");
+            asm.global("chacha_avx_permute");
             generate::<OWord>(&mut asm, false, false);
+            
+            asm.global("chacha_avx_permute_add");
+            generate::<OWord>(&mut asm, true, false);
+            
+            asm.global("chacha_avx_permute_add_xor");
+            generate::<OWord>(&mut asm, true, true);
             
             asm.output();
         }
